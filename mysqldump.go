@@ -50,6 +50,14 @@ func Dump(db *sql.DB, out io.Writer) error {
 	}).Dump()
 }
 
+// DumpDatabase dumps a specific database
+func DumpDatabase(db *sql.DB, out io.Writer, database string) error {
+	return (&Data{
+		Connection: db,
+		Out:        out,
+	}).DumpDatabase(database)
+}
+
 // Close the dumper.
 // Will also close the database the dumper is connected to as well as the out stream if it has a Close method.
 //

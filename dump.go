@@ -132,6 +132,77 @@ DROP VIEW IF EXISTS {{ .NameEsc }};
 const nullType = "NULL"
 
 // Dump data using struct
+func (data *Data) DumpDatabase(database string) error {
+	meta := metaData{
+		DumpVersion: Version,
+	}
+
+	if data.MaxAllowedPacket == 0 {
+		data.MaxAllowedPacket = defaultMaxAllowedPacket
+	}
+
+	if err := data.getTemplates(); err != nil {
+		return err
+	}
+
+	// Start the read only transaction and defer the rollback until the end
+	// This way the database will have the exact state it did at the beginning of
+	// the backup and nothing can be accidentally committed
+	if err := data.begin(); err != nil {
+		return err
+	}
+	defer data.rollback()
+
+	if err := data.useDatabase(database); err != nil {
+		return err
+	}
+
+	if err := meta.updateServerVersion(data); err != nil {
+		return err
+	}
+
+	if err := data.headerTmpl.Execute(data.Out, meta); err != nil {
+		return err
+	}
+
+	tables, err := data.getTables()
+	if err != nil {
+		return err
+	}
+
+	// Lock all tables before dumping if present
+	if data.LockTables && len(tables) > 0 {
+		var b bytes.Buffer
+		b.WriteString("LOCK TABLES ")
+		for index, table := range tables {
+			if index != 0 {
+				b.WriteString(",")
+			}
+			b.WriteString("`" + table.Name + "` READ /*!32311 LOCAL */")
+		}
+
+		if _, err := data.Connection.Exec(b.String()); err != nil {
+			return err
+		}
+
+		defer data.Connection.Exec("UNLOCK TABLES")
+	}
+
+	for _, table := range tables {
+		if err := data.dumpTable(table); err != nil {
+			return err
+		}
+	}
+
+	if data.err != nil {
+		return data.err
+	}
+
+	meta.CompleteTime = time.Now().String()
+	return data.footerTmpl.Execute(data.Out, meta)
+}
+
+// Dump data using struct
 func (data *Data) Dump() error {
 	meta := metaData{
 		DumpVersion: Version,
@@ -208,6 +279,17 @@ func (data *Data) begin() (err error) {
 		ReadOnly:  true,
 	})
 	return
+}
+
+// Choose a database to dump
+func (data *Data) useDatabase(database string) error {
+	if data.tx == nil {
+		return errors.New("transaction not started")
+	}
+	if _, err := data.tx.Exec("USE " + database); err != nil {
+		return err
+	}
+	return nil
 }
 
 // rollback cancels the transaction
